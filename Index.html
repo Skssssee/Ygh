@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Teacher Student Coins & Marks</title>
+
+<!-- Firebase -->
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+
+<!-- jsPDF for PDF generation -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.28/jspdf.plugin.autotable.min.js"></script>
+
+<style>
+body { font-family:sans-serif; background:#0f172a; color:white; margin:0; padding:0; }
+.container { max-width:900px; margin:auto; padding:20px; }
+h1 { text-align:center; }
+input, button { padding:8px; margin:5px 0; border-radius:5px; border:none; }
+button { cursor:pointer; background:#06b6d4; color:black; font-weight:bold; }
+table { width:100%; border-collapse:collapse; margin-top:20px; }
+th, td { padding:10px; border-bottom:1px solid rgba(255,255,255,0.2); text-align:center; }
+.coin.pos { color:#16a34a; }
+.coin.neg { color:#dc2626; }
+.hidden { display:none; }
+</style>
+</head>
+<body>
+<div class="container">
+<h1>Student Coins & Marks System</h1>
+
+<!-- Login -->
+<div id="loginDiv">
+    <h3>Teacher Login</h3>
+    <input type="email" id="email" placeholder="Teacher Email">
+    <input type="password" id="password" placeholder="Password">
+    <button onclick="login()">Login</button>
+    <button onclick="signup()">Sign Up (Teacher)</button>
+</div>
+
+<!-- Admin Panel -->
+<div id="adminPanel" class="hidden">
+    <h3>Welcome, <span id="teacherName"></span></h3>
+    <button onclick="logout()">Logout</button>
+    <hr>
+    <h4>Add Student</h4>
+    <input type="text" id="studentName" placeholder="Student Name">
+    <input type="number" id="studentCoins" placeholder="Initial Coins">
+    <button onclick="addStudent()">Add Student</button>
+    <hr>
+    <button onclick="downloadPDF()">📄 Download Leaderboard as PDF</button>
+</div>
+
+<!-- Leaderboard -->
+<div id="leaderboard">
+    <h3>Students Leaderboard</h3>
+    <table id="leaderboardTable">
+        <thead>
+            <tr><th>Rank</th><th>Name</th><th>Total Coins</th><th>Marks (per teacher)</th><th>Actions</th></tr>
+        </thead>
+        <tbody id="studentTable"></tbody>
+    </table>
+</div>
+
+<script>
+// ---------------- Firebase Config ----------------
+const firebaseConfig = {
+  apiKey: "AIzaSyDBEFpXhcenA7pUlDAmk1VxtQ2fFGeRhPk",
+  authDomain: "counng.firebaseapp.com",
+  projectId: "counng",
+  storageBucket: "counng.firebasestorage.app",
+  messagingSenderId: "49517241627",
+  appId: "1:49517241627:web:564b543df93732a8e6dfbe",
+  measurementId: "G-GL5FX01HCZ"
+};
+
+// Initialize Firebase
+firebase.initializeApp(firebaseConfig);
+const auth = firebase.auth();
+const db = firebase.firestore();
+
+// ---------------- DOM Elements ----------------
+const loginDiv = document.getElementById("loginDiv");
+const adminPanel = document.getElementById("adminPanel");
+const teacherNameSpan = document.getElementById("teacherName");
+const studentTable = document.getElementById("studentTable");
+
+// ---------------- Auth State ----------------
+auth.onAuthStateChanged(user => {
+    if(user){
+        loginDiv.classList.add("hidden");
+        adminPanel.classList.remove("hidden");
+        teacherNameSpan.textContent = user.email;
+        loadStudents();
+    } else {
+        loginDiv.classList.remove("hidden");
+        adminPanel.classList.add("hidden");
+    }
+});
+
+// ---------------- Login / Signup ----------------
+function login(){
+    const email = document.getElementById("email").value;
+    const password = document.getElementById("password").value;
+    auth.signInWithEmailAndPassword(email,password)
+    .catch(e=>alert("Login Error: "+e.message));
+}
+
+function signup(){
+    const email = document.getElementById("email").value;
+    const password = document.getElementById("password").value;
+    auth.createUserWithEmailAndPassword(email,password)
+    .then(()=>alert("Teacher account created!"))
+    .catch(e=>alert("Sign Up Error: "+e.message));
+}
+
+function logout(){
+    auth.signOut();
+}
+
+// ---------------- Student Functions ----------------
+async function addStudent(){
+    const name = document.getElementById("studentName").value.trim();
+    const coins = parseInt(document.getElementById("studentCoins").value || "0");
+    if(!name) return alert("Enter student name");
+    await db.collection("students").add({
+        name,
+        initialCoins: coins,
+        coins: coins,
+        marks: {},  // store per teacher
+        createdAt:firebase.firestore.FieldValue.serverTimestamp()
+    });
+    document.getElementById("studentName").value="";
+    document.getElementById("studentCoins").value="";
+    loadStudents();
+}
+
+// ---------------- Load Students with Rank ----------------
+async function loadStudents(){
+    const snapshot = await db.collection("students")
+        .orderBy("coins","desc")
+        .get();
+
+    studentTable.innerHTML = "";
+    let rank = 1; // manual rank counter
+
+    snapshot.forEach(doc=>{
+        const stu = doc.data();
+
+        // Show per-teacher marks as a string
+        const marksPerTeacher = Object.entries(stu.marks || {})
+            .map(([teacher, mark]) => `${teacher.split('@')[0]}: ${mark}`)
+            .join(', ');
+
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+            <td>${rank}</td>
+            <td>${stu.name}</td>
+            <td class="coin ${stu.coins >= 0 ? 'pos' : 'neg'}">${stu.coins}</td>
+            <td>${marksPerTeacher || '0'}</td>
+            <td>
+                <button onclick="giveMarks('${doc.id}')">Give Marks</button>
+                <button onclick="deleteStudent('${doc.id}')">Delete</button>
+            </td>
+        `;
+        studentTable.appendChild(tr);
+        rank++;
+    });
+}
+
+// ---------------- Give Marks ----------------
+async function giveMarks(studentId){
+    const m = parseInt(prompt("Enter marks for student","0"));
+    if(isNaN(m)) return;
+    const teacherEmail = auth.currentUser.email;
+
+    const stuRef = db.collection("students").doc(studentId);
+    const doc = await stuRef.get();
+    const data = doc.data();
+
+    const marks = data.marks || {};
+    marks[teacherEmail] = m; // store teacher-specific marks
+
+    // total coins = initialCoins + sum of all teacher marks
+    let totalCoins = data.initialCoins || 0;
+    for (let t in marks) totalCoins += marks[t];
+
+    await stuRef.update({
+        marks: marks,
+        coins: totalCoins
+    });
+
+    loadStudents();
+}
+
+// ---------------- Delete Student ----------------
+async function deleteStudent(id){
+    if(!confirm("Delete student?")) return;
+    await db.collection("students").doc(id).delete();
+    loadStudents();
+}
+
+// ---------------- Download PDF ----------------
+async function downloadPDF(){
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF();
+
+    doc.setFontSize(18);
+    doc.text("Students Coins & Marks Leaderboard", 14, 20);
+
+    const rows = [];
+    const snapshot = await db.collection("students").orderBy("coins", "desc").get();
+    let rank = 1;
+
+    snapshot.forEach(docSnap => {
+        const stu = docSnap.data();
+        const marksPerTeacher = Object.entries(stu.marks || {})
+            .map(([teacher, mark]) => `${teacher.split('@')[0]}: ${mark}`)
+            .join(', ');
+        rows.push([rank, stu.name, stu.coins, marksPerTeacher]);
+        rank++;
+    });
+
+    doc.autoTable({
+        head: [["Rank", "Name", "Total Coins", "Marks (per Teacher)"]],
+        body: rows,
+        startY: 30,
+    });
+
+    doc.save("leaderboard.pdf");
+}
+</script>
+</body>
+</html>
